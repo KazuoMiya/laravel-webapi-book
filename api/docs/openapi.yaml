@@ -1,0 +1,396 @@
+openapi: 3.1.0
+info:
+  title: TaskBoard API
+  version: 1.0.0
+  description: |
+    タスクを管理するためのWeb API。
+    第6章の仕様書に、第11章（チーム）、第14章（集計）、第16章（Idempotency-Key）で加えた項目を反映した最終版です。
+servers:
+  - url: http://localhost/api/v1
+    description: ローカル開発環境
+security:
+  - bearerAuth: []          # 特に指定のない操作はトークン認証が必要
+tags:
+  - name: 認証
+  - name: タスク
+  - name: チーム
+
+paths:
+  /login:
+    post:
+      tags: [認証]
+      summary: ログインしてトークンを受け取る
+      security: []            # この操作だけは認証不要
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, device_name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                device_name: { type: string, maxLength: 255, examples: ["Taro's iPhone"] }
+      responses:
+        '200':
+          description: ログイン成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      user: { $ref: '#/components/schemas/User' }
+                      token: { type: string, examples: ['1|aBcDeF0123456789'] }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /tasks:
+    get:
+      tags: [タスク]
+      summary: タスク一覧を取得する
+      parameters:
+        - { name: is_done, in: query, schema: { type: boolean } }
+        - { name: priority, in: query, schema: { $ref: '#/components/schemas/Priority' } }
+        - { name: tag, in: query, schema: { type: string } }
+        - { name: q, in: query, description: タイトルとメモのキーワード, schema: { type: string, maxLength: 100 } }
+        - { name: due_before, in: query, schema: { type: string, format: date } }
+        - name: sort
+          in: query
+          description: 先頭の - は降順
+          schema:
+            type: string
+            enum: [due_date, -due_date, priority, -priority, created_at, -created_at]
+            default: -created_at
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 15 } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [タスク]
+      summary: タスクを作成する
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: 同じキーで再送されたときは、作成し直さずに前回の応答を返す（第16章）
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/TaskInput'
+                - required: [title]   # 作成時はtitleが必須
+      responses:
+        '201':
+          description: 作成成功
+          headers:
+            Location:
+              description: 作成したタスクのURL
+              schema: { type: string, format: uri }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /tasks/summary:
+    get:
+      tags: [タスク]
+      summary: 個人のタスクの件数をまとめて取得する（第14章）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [open, overdue, due_today]
+                    properties:
+                      open: { type: integer, description: 未完了の件数 }
+                      overdue: { type: integer, description: 期限が昨日以前の未完了の件数 }
+                      due_today: { type: integer, description: 期限が今日の未完了の件数 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /tags:
+    get:
+      tags: [タスク]
+      summary: 自分のタグの一覧を取得する
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /tasks/{task}:
+    parameters:
+      - { name: task, in: path, required: true, description: タスクのID, schema: { type: integer } }
+    get:
+      tags: [タスク]
+      summary: タスクの詳細を取得する
+      responses:
+        '200':
+          description: 成功
+          headers:
+            ETag:
+              description: タスクの版（例："v3"）。更新のときに If-Match に指定する
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [タスク]
+      summary: タスクを部分更新する
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          description: チームのタスクでは必須。取得したときの ETag（例："v3"）
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskInput' }
+      responses:
+        '200':
+          description: 更新成功
+          headers:
+            ETag:
+              description: 更新後のタスクの版
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '412':
+          description: 他の人が先に更新した
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '428':
+          description: If-Match がない（チームのタスクのみ）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [タスク]
+      summary: タスクを削除する
+      responses:
+        '204': { description: 削除成功（ボディなし） }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /teams/{team}/tasks:
+    parameters:
+      - { name: team, in: path, required: true, description: チームのID, schema: { type: integer } }
+    get:
+      tags: [チーム]
+      summary: チームのタスク一覧を取得する（第11章）
+      description: 絞り込みと並べ替えの指定は GET /tasks と同じ。メンバー以外には404を返す
+      parameters:
+        - { name: is_done, in: query, schema: { type: boolean } }
+        - { name: priority, in: query, schema: { $ref: '#/components/schemas/Priority' } }
+        - { name: q, in: query, schema: { type: string, maxLength: 100 } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 15 } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [チーム]
+      summary: チームのタスクを作成する（第11章）
+      description: viewer の役割では作成できない（403）。チームのタスクにはタグを付けない
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 100 }
+                memo: { type: [string, 'null'], maxLength: 2000 }
+                due_date: { type: [string, 'null'], format: date }
+                priority: { $ref: '#/components/schemas/Priority' }
+                is_done: { type: boolean }
+                assignee_id: { type: [integer, 'null'], description: 担当者。チームのメンバーに限る }
+      responses:
+        '201':
+          description: 作成成功
+          headers:
+            Location:
+              description: 作成したタスクのURL
+              schema: { type: string, format: uri }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    Priority:
+      type: string
+      enum: [low, medium, high]
+    Tag:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: integer }
+        name: { type: string, maxLength: 50 }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+    Task:
+      type: object
+      required: [id, title, memo, due_date, priority, is_done, tags, team_id, version, created_at, updated_at]
+      properties:
+        id: { type: integer, examples: [12] }
+        title: { type: string, maxLength: 100, examples: [牛乳を買う] }
+        memo: { type: [string, 'null'], maxLength: 2000 }
+        due_date: { type: [string, 'null'], format: date }
+        priority: { $ref: '#/components/schemas/Priority' }
+        is_done: { type: boolean }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/Tag' }
+        team_id: { type: [integer, 'null'], description: null なら個人のタスク }
+        assignee:
+          type: [object, 'null']
+          properties:
+            id: { type: integer }
+            name: { type: string }
+        version: { type: integer, description: 更新のたびに増える版。If-Match に使う }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    TaskInput:
+      type: object
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100 }
+        memo: { type: [string, 'null'], maxLength: 2000 }
+        due_date: { type: [string, 'null'], format: date }
+        priority: { $ref: '#/components/schemas/Priority' }
+        is_done: { type: boolean }
+        tags:
+          type: array
+          maxItems: 10
+          uniqueItems: true     # 同じタグ名を重複して送れない
+          items: { type: string, minLength: 1, maxLength: 50 }
+        assignee_id:
+          type: [integer, 'null']
+          description: チームのタスクの担当者。個人のタスクには指定できない
+    TaskResponse:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/Task' }
+    TaskCollection:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Task' }
+        links:
+          type: object
+          properties:
+            first: { type: [string, 'null'] }
+            last: { type: [string, 'null'] }
+            prev: { type: [string, 'null'] }
+            next: { type: [string, 'null'] }
+        meta:
+          type: object
+          properties:
+            current_page: { type: integer }
+            last_page: { type: integer }
+            per_page: { type: integer }
+            total: { type: integer }
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    ValidationError:
+      type: object
+      required: [message, errors]
+      properties:
+        message: { type: string }
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+  responses:
+    Unauthorized:
+      description: 認証されていない
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { message: Unauthenticated. }
+    Forbidden:
+      description: 見えているが、操作する権限がない（チームの役割による）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: 見つからない（他人のタスクを含む）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: 入力に誤りがある
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+    TooManyRequests:
+      description: 回数制限を超えた
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

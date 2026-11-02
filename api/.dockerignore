@@ -1,0 +1,12 @@
+.env
+.env.*
+.git
+node_modules
+vendor
+tests
+# 開発環境で作られたキャッシュを持ち込まない
+bootstrap/cache/*.php
+storage/logs/*
+storage/framework/cache/data/*
+storage/framework/sessions/*
+storage/framework/views/*
