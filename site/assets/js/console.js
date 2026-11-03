@@ -34,18 +34,16 @@ function getMock() {
   return mock;
 }
 
-const localVars = {};
-function varsFor(mode) {
-  return mode === 'local' ? localVars : readJSON(MOCK_VARS_KEY, {});
+const localVars = new Map();
+function varsFor(scope) {
+  if (scope === 'browser') return readJSON(MOCK_VARS_KEY, {});
+  if (!localVars.has(scope)) localVars.set(scope, Object.create(null));
+  return localVars.get(scope);
 }
-function setVar(mode, name, value) {
-  if (mode === 'local') {
-    if (value === null) delete localVars[name]; else localVars[name] = value;
-  } else {
-    const vars = readJSON(MOCK_VARS_KEY, {});
-    if (value === null) delete vars[name]; else vars[name] = value;
-    writeJSON(MOCK_VARS_KEY, vars);
-  }
+function setVar(scope, name, value) {
+  const vars = varsFor(scope);
+  if (value === null) delete vars[name]; else vars[name] = value;
+  if (scope === 'browser') writeJSON(MOCK_VARS_KEY, vars);
   window.dispatchEvent(new CustomEvent('tb-vars-change'));
 }
 
@@ -114,6 +112,37 @@ function hasCredentials(headers) {
   return Object.keys(headers).some((k) => ['authorization', 'cookie', 'proxy-authorization'].includes(k.toLowerCase()));
 }
 
+// PHPはフォーム項目名のドットや空白を下線に変換する。教材では通常の項目名だけを受け付ける。
+function checkPostFields(params) {
+  for (const name of params.keys()) {
+    if (name === '_method' || !/^[a-zA-Z0-9_]+(?:\[[a-zA-Z0-9_]*\])*$/.test(name) || name.startsWith('_method[')) {
+      throw new Error('POSTの項目名やメソッドの上書き指定を確かめてください。');
+    }
+  }
+}
+
+function checkLocalPost(request, url) {
+  if (request.method !== 'POST') return;
+  const headers = new Headers(request.headers);
+  for (const name of headers.keys()) {
+    if (name.replace(/[_.]/g, '-') === 'x-http-method-override') {
+      throw new Error('メソッドの上書きはできません。削除する場合は -X DELETE を指定してください。');
+    }
+  }
+  checkPostFields(url.searchParams);
+  if (!request.body) return;
+  const type = (headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+  if (type === 'application/x-www-form-urlencoded') {
+    checkPostFields(new URLSearchParams(request.body));
+  } else if (type === 'application/json') {
+    let fields;
+    try { fields = JSON.parse(request.body); } catch { return; } // JSONの構文エラーはAPIで扱う
+    if (fields && Object.hasOwn(fields, '_method')) throw new Error('JSONでメソッドを上書きすることはできません。');
+  } else {
+    throw new Error('手元のAPIへのPOSTにはJSONまたはフォーム形式を指定してください。');
+  }
+}
+
 // 送り先を決める。認証情報を送ってよいのは、本書のAPI（模擬API、または設定した手元のAPIの /api/）だけ
 export function resolveTarget(mode, request, base = BOOK_ORIGIN) {
   const url = new URL(request.url);
@@ -122,9 +151,10 @@ export function resolveTarget(mode, request, base = BOOK_ORIGIN) {
   if (isBookApi && mode === 'browser') return { via: 'mock', url: `${BOOK_ORIGIN}${url.pathname}${url.search}` };
   if (isBookApi && mode === 'local') {
     const target = `${base}${url.pathname}${url.search}`;
-    if (credentialed && !url.pathname.startsWith('/api/')) {
+    if (!url.pathname.startsWith('/api/') || /%(?:25|2e|2f|5c)/i.test(url.pathname)) {
       throw new Error('認証情報は、手元のAPIの /api/ 以下にだけ送ります。送り先のパスを確かめてください。');
     }
+    checkLocalPost(request, url);
     return { via: 'local', url: target };
   }
   if (credentialed) {
@@ -136,11 +166,28 @@ export function resolveTarget(mode, request, base = BOOK_ORIGIN) {
   if (!['GET', 'HEAD'].includes(request.method) || request.body) {
     throw new Error('外部のAPIには、データを送らない参照（GET）だけを送れます。');
   }
+  if (request.missing?.length || Object.keys(request.headers).length || url.username || url.password ||
+      url.search || url.hash || !/^\/users\/[a-z0-9-]+$/i.test(url.pathname)) {
+    throw new Error('外部の演習では、変数やヘッダーを使わず GitHub の /users/ユーザー名 を指定してください。');
+  }
   return { via: 'internet', url: url.href };
 }
 
-async function send(mode, request) {
-  const target = resolveTarget(mode, request, localBase());
+// 変数を渡す前に送信先を決める。展開の前後で外部APIに切り替わるコマンドも拒否する。
+export function prepareRequest(mode, text, vars, base) {
+  const literal = parseCurl(text, Object.create(null));
+  const url = new URL(literal.url);
+  if (url.origin !== BOOK_ORIGIN && url.origin !== base) {
+    return { request: literal, target: resolveTarget(mode, literal, base) };
+  }
+  const expanded = vars.__last_invite ? text.replaceAll('招待コード', vars.__last_invite) : text;
+  const request = parseCurl(expanded, vars);
+  const target = resolveTarget(mode, request, base);
+  if (target.via === 'internet') throw new Error('変数で外部の送り先を指定することはできません。');
+  return { request, target };
+}
+
+async function send(target, request) {
   const started = performance.now();
   if (target.via === 'mock') {
     const r = await getMock().request({ ...request, url: target.url });
@@ -243,6 +290,7 @@ export function mountConsole(codeBlock) {
     }
     try { localStorage.setItem(LOCAL_BASE_KEY, normalized); } catch { /* 保存できなくても、この場では使う */ }
     baseInput.value = normalized;
+    window.dispatchEvent(new CustomEvent('tb-vars-change'));
   });
 
   function refreshMode() {
@@ -259,7 +307,8 @@ export function mountConsole(codeBlock) {
 
   function renderVars() {
     const mode = getMode();
-    const vars = varsFor(mode);
+    const scope = mode === 'local' ? localBase() : 'browser';
+    const vars = varsFor(scope);
     varsBar.replaceChildren();
     const names = new Set([...KNOWN_VARS.map((v) => v.name), ...Object.keys(vars).filter((n) => !n.startsWith('__'))]);
     const revoked = vars.__revoked ?? [];
@@ -278,7 +327,7 @@ export function mountConsole(codeBlock) {
         chip.append(el('button', { type: 'button', class: 'chip-btn', title: `${known.email} でログインし直して入れる`, onclick: () => prepareToken(known) }, '入れ直す'));
       }
       if (value) {
-        chip.append(el('button', { type: 'button', class: 'chip-btn', 'aria-label': `${name} を空にする`, title: '空にする', onclick: () => setVar(mode, name, null) }, '×'));
+        chip.append(el('button', { type: 'button', class: 'chip-btn', 'aria-label': `${name} を空にする`, title: '空にする', onclick: () => setVar(scope, name, null) }, '×'));
       }
       varsBar.append(chip);
     }
@@ -286,12 +335,15 @@ export function mountConsole(codeBlock) {
 
   async function prepareToken(known) {
     const mode = getMode();
+    const base = localBase();
+    const scope = mode === 'local' ? base : 'browser';
     // 教材のアカウントのパスワード（シーダーと第10章の例）
     const body = JSON.stringify({ email: known.email, password: known.name === 'HANAKO_TOKEN' ? 'secret-pass' : 'password', device_name: 'web-book' });
     try {
-      const result = await send(mode, { method: 'POST', url: `${BOOK_ORIGIN}/api/v1/login`, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
+      const request = { method: 'POST', url: `${BOOK_ORIGIN}/api/v1/login`, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body };
+      const result = await send(resolveTarget(mode, request, base), request);
       const token = JSON.parse(result.body || '{}')?.data?.token;
-      if (token) setVar(mode, known.name, token);
+      if (token) setVar(scope, known.name, token);
       else hint.textContent = `ログインできませんでした（${result.status}）。${JSON.parse(result.body || '{}').message ?? ''}`;
     } catch (error) {
       hint.textContent = connectionHelp(error);
@@ -329,9 +381,12 @@ export function mountConsole(codeBlock) {
     list.append(item);
 
     // 結果として { ok, stop } を返す。stop が true なら「すべて順に送る」をそこで止める
-    const run = async ({ confirmed = false } = {}) => {
+    const run = async (confirmation = null) => {
+      if (button.disabled) return { ok: false, stop: true };
       const mode = getMode();
-      const vars = varsFor(mode);
+      const base = localBase();
+      const scope = mode === 'local' ? base : 'browser';
+      const vars = varsFor(scope);
       output.replaceChildren();
       button.disabled = true;
       try {
@@ -350,26 +405,24 @@ export function mountConsole(codeBlock) {
               output.append(note('先にログインのcurlを送るか、この行の値を、受け取ったトークンに書き換えてから送ってください。', 'warn'));
               return { ok: false, stop: true };
             }
-            setVar(mode, name, token);
+            setVar(scope, name, token);
             output.append(note(message));
           } else {
-            setVar(mode, name, value);
+            setVar(scope, name, value);
             output.append(note(`${name} に値を入れました。`));
           }
           return { ok: true };
         }
-        let text = textarea.value.trim();
-        const invite = vars.__last_invite;
-        if (text.includes('招待コード') && invite) {
-          text = text.replaceAll('招待コード', invite);
-          output.append(note('「招待コード」を、ログに書き出された招待コードに置き換えて送りました。'));
+        const text = textarea.value.trim();
+        const { request, target } = prepareRequest(mode, text, vars, base);
+        const signature = JSON.stringify([mode, target, request, text]);
+        if (confirmation !== null && confirmation !== signature) {
+          output.append(note('確認後に内容が変わりました。送り先とコマンドを確かめて、もう一度「送信」を押してください。', 'warn'));
+          return { ok: false, stop: true };
         }
-        const request = parseCurl(text, vars);
-        const target = resolveTarget(mode, request, localBase());
-        // 手元のAPIへの削除は、送り先と対象を見せてから、押し直したときだけ送る
-        if (target.via === 'local' && request.method === 'DELETE' && !confirmed) {
+        if (target.via === 'local' && request.method === 'DELETE' && confirmation === null) {
           const confirm = el('button', { type: 'button', class: 'btn btn-danger' }, '削除を送る');
-          confirm.addEventListener('click', () => run({ confirmed: true }));
+          confirm.addEventListener('click', () => run(signature), { once: true });
           output.append(el('div', { class: 'cmd-confirm' },
             note(`手元のAPIの ${target.url} に DELETE を送ります。消えるのはこのURLが指すデータです。確かめてから押してください。`, 'warn'),
             confirm));
@@ -379,7 +432,7 @@ export function mountConsole(codeBlock) {
           output.append(note(`変数 ${request.missing.map((n) => `$${n}`).join('、')} が空のまま送りました。上の「ログインして入れる」で用意できます。`, 'warn'));
         }
         const mailCount = mails.length;
-        const result = await send(mode, request);
+        const result = await send(target, request);
         output.append(renderResponse(result, request));
         let data = null;
         try { data = JSON.parse(result.body || 'null'); } catch { data = null; }
@@ -387,7 +440,7 @@ export function mountConsole(codeBlock) {
         const usedToken = (request.headers.Authorization ?? request.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
         if (result.status === 204 && /\/logout$/.test(new URL(request.url).pathname) && usedToken) {
           // ログアウトしたトークンは、もう使えないことを変数の欄に示す
-          setVar(mode, '__revoked', [...(varsFor(mode).__revoked ?? []), usedToken]);
+          setVar(scope, '__revoked', [...(varsFor(scope).__revoked ?? []), usedToken]);
         }
         if (result.status === 401 && usedVars.length) {
           output.append(note(`${usedVars.map((n) => `$${n}`).join('、')} のトークンは使えません（ログアウト済みか期限切れ）。上の欄の「ログインして入れる」か「入れ直す」で用意し直せます。`, 'warn'));
@@ -395,12 +448,12 @@ export function mountConsole(codeBlock) {
         // ログインや登録で受け取ったトークンを、変数に入れておく
         const token = data?.data?.token;
         if (token) {
-          setVar(mode, '__last_token', token);
+          setVar(scope, '__last_token', token);
           let email = '';
           try { email = JSON.parse(request.body || '{}').email ?? ''; } catch { email = ''; }
           const known = KNOWN_VARS.find((v) => v.email === email && !/agent-tokens/.test(request.url));
           if (known) {
-            setVar(mode, known.name, token);
+            setVar(scope, known.name, token);
             output.append(note(`受け取ったトークンを $${known.name} に入れました。`));
           } else {
             output.append(note('受け取ったトークンを覚えました。次の TOKEN=... の行を実行すると、変数に入ります。'));
@@ -415,7 +468,7 @@ export function mountConsole(codeBlock) {
           carryForward(run, createdId, output);
         }
         for (const mail of mails.slice(mailCount)) {
-          setVar(mode, '__last_invite', mail.code);
+          setVar(scope, '__last_invite', mail.code);
           output.append(el('div', { class: 'mail-log' },
             el('div', { class: 'mail-head' }, `ログに書き出されたメール（宛先：${mail.to}）`),
             el('pre', {}, `件名：${mail.subject}\n\n${mail.body}`),

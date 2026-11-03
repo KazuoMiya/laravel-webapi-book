@@ -9,7 +9,7 @@ globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: 
 globalThis.window = { dispatchEvent: () => {}, addEventListener: () => {} };
 globalThis.CustomEvent = class { constructor(type) { this.type = type; } };
 globalThis.document = { documentElement: { dataset: {} } };
-const { resolveTarget, carryCreatedId, isCreateTask } = await import('../assets/js/console.js');
+const { prepareRequest, resolveTarget, carryCreatedId, isCreateTask } = await import('../assets/js/console.js');
 
 const results = [];
 async function test(name, fn) {
@@ -129,6 +129,32 @@ await test('認証情報は、本書のAPIにだけ送る', () => {
   assert.throws(() => resolveTarget('local', githubPost), /GET/);
   const unknown = parseCurl('curl https://example.com/', {});
   assert.throws(() => resolveTarget('browser', unknown), /本書のAPIと/);
+});
+
+await test('外部のURL・ヘッダー・本文では変数を展開しない', () => {
+  const vars = { TOKEN: 'dummy-secret' };
+  const prepare = (command) => prepareRequest('local', command, vars, 'http://localhost');
+  for (const command of [
+    'curl "https://api.github.com/users/octocat$TOKEN"',
+    'curl "https://api.github.com/users/laravel?x=$TOKEN"',
+    'curl https://api.github.com/users/laravel -H "X-Example: $TOKEN"',
+    'curl https://api.github.com/users/laravel -d "p=$TOKEN"',
+    'curl http://localhost/outside -d "p=$TOKEN"',
+  ]) assert.throws(() => prepare(command));
+  assert.equal(prepare('curl https://api.github.com/users/laravel').target.via, 'internet');
+  assert.equal(prepare('curl -X HEAD https://api.github.com/users/missing-user').target.via, 'internet');
+  assert.equal(prepare('curl http://localhost/api/v1/me -H "Authorization: Bearer $TOKEN"').request.headers.Authorization, 'Bearer dummy-secret');
+});
+
+await test('書き換えたPOSTは削除確認を迂回できない', () => {
+  const post = (args) => prepareRequest('local', 'curl -X POST http://localhost/api/v1/tasks/56' + args, {}, 'http://localhost');
+  for (const args of [
+    ' -H "X-HTTP-Method-Override: DELETE"', ' -H "X_HTTP_METHOD_OVERRIDE: DELETE"',
+    '?%5fmethod=DELETE', ' -d "_method=DELETE"', ' -d ".method=DELETE"',
+    ` --json '{"_method":"DELETE"}'`, ' -H "Content-Type: multipart/form-data" -d payload',
+  ]) assert.throws(() => post(args));
+  assert.equal(post(` --json '{"title":"例"}'`).request.method, 'POST');
+  assert.equal(post(' -d "title=demo"').request.method, 'POST');
 });
 
 for (const [status, name, message] of results) console.log(`${status} ${name}${message ? `: ${message}` : ''}`);

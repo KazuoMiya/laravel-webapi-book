@@ -73,4 +73,25 @@ class TeamInvitationTest extends TestCase
         $this->postJson('/api/v1/invitations/leftover-token/accept')->assertNotFound();
         $this->assertNull($team->roleOf($hanako));
     }
+
+    public function test_upgrade_expires_pending_invitations_and_allows_new_ones(): void
+    {
+        $team = Team::factory()->create();
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+        $this->invite($team, $user->email, 'already-used');
+        $this->postJson('/api/v1/invitations/already-used/accept')->assertOk();
+        $team->members()->detach($user->id);
+        $this->invite($team, $user->email, 'legacy-pending');
+        $team->invitations()->whereNull('accepted_at')->update(['role' => 'admin']);
+
+        $migration = require database_path('migrations/2026_11_03_000002_expire_legacy_team_invitations.php');
+        $migration->up();
+
+        $this->postJson('/api/v1/invitations/legacy-pending/accept')->assertNotFound();
+        $this->assertNull($team->roleOf($user));
+        $this->assertTrue($team->invitations()->whereNotNull('accepted_at')->where('expires_at', '>', now())->exists());
+        $this->invite($team, $user->email, 'new-invitation');
+        $this->postJson('/api/v1/invitations/new-invitation/accept')->assertOk();
+    }
 }

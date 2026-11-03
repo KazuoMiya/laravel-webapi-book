@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>実習コンソールの削除確認テスト</title>
+<pre id="result">テスト中</pre>
+<script type="module">
+import { mountConsole } from '../assets/js/console.js';
+import { setMode } from '../assets/js/prefs.js';
+
+// site を localhost で配信して開く。API通信はダミーに置き換える。
+const requests = [];
+window.fetch = async (url, options) => {
+  requests.push({ url, method: options.method });
+  return new Response(null, { status: 204 });
+};
+const equal = (actual, expected) => {
+  if (actual !== expected) throw Error(`expected ${expected}, got ${actual}`);
+};
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+try {
+  setMode('local');
+  const block = document.createElement('div');
+  const code = document.createElement('code');
+  code.textContent = '$ curl -X DELETE http://localhost/api/v1/tasks/56';
+  block.append(code);
+  document.body.append(block);
+  const panel = mountConsole(block);
+  const input = panel.querySelector('textarea');
+  const send = panel.querySelector('.cmd-row button');
+  const confirm = () => panel.querySelector('.cmd-confirm button').click();
+  send.click();
+  equal(requests.length, 0);
+  equal(panel.querySelector('.cmd-confirm').textContent.includes('/tasks/56'), true);
+  input.value = input.value.replace('/56', '/41');
+  confirm();
+  await settle();
+  equal(requests.length, 0);
+  send.click();
+  equal(panel.querySelector('.cmd-confirm').textContent.includes('/tasks/41'), true);
+  confirm();
+  await settle();
+  equal(requests.length, 1);
+  equal(requests[0].method, 'DELETE');
+  equal(requests[0].url, 'http://localhost/api/v1/tasks/41');
+
+  send.click();
+  input.value = 'curl -X POST http://localhost/api/v1/tasks/41 -H "X-HTTP-Method-Override: DELETE"';
+  confirm();
+  await settle();
+  send.click();
+  await settle();
+  equal(requests.length, 1);
+  document.querySelector('#result').textContent = 'PASS';
+} catch (error) {
+  document.querySelector('#result').textContent = String(error);
+  throw error;
+}
+</script>
+</html>
