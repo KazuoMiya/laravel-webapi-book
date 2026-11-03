@@ -71,7 +71,11 @@ jobs:
             git diff
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          git diff --name-only | while read -r file; do echo "::error file=$file::Pint の書き方に合っていません"; done
+          # 注記（annotation）にも差分を入れる。注記は、ログインしなくても実行結果のページで読める
+          git diff --name-only --relative | while read -r file; do
+            body=$(git diff --relative -- "$file" | head -c 3500 | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } 1')
+            echo "::error file=api/$file,title=Pint の書き方に合っていません::$body"
+          done
           git checkout -- .
           exit 1
 

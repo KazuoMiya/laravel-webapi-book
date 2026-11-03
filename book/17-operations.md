@@ -246,9 +246,7 @@ class SendDueTaskReminder implements ShouldQueue
     public int $tries = 3;   // 失敗したら3回まで再試行する
 
     // 対象の日付（YYYY-MM-DD）は、ジョブを登録するときに日本時間で決めて渡す
-    public function __construct(public User $user, public string $date)
-    {
-    }
+    public function __construct(public User $user, public string $date) {}
 
     // 通知してよいタスクだけを選ぶ。テストしやすいようにメソッドに分ける
     public function targetTasks(): Collection

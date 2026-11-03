@@ -2,11 +2,12 @@
 
 namespace App\Http\Resources;
 
+use App\Models\Task;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
- * @mixin \App\Models\Task
+ * @mixin Task
  */
 class TaskResource extends JsonResource
 {
