@@ -37,6 +37,12 @@ class AcceptInvitationController extends Controller
             $invitation->team->members()->attach($user->id, ['role' => $invitation->role->value]);
             $invitation->update(['accepted_at' => now()]);
 
+            // 同じ人あてに残っているほかの招待は消す。あとで外されたときに、それで戻れないようにする
+            $invitation->team->invitations()
+                ->where('email', $invitation->email)
+                ->whereNull('accepted_at')
+                ->delete();
+
             return $invitation->team;
         });
 

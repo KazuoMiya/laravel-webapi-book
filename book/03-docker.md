@@ -102,7 +102,7 @@ services:
             context: './vendor/laravel/sail/runtimes/8.5'
         image: 'sail-8.5/app'
         ports:
-            - '${APP_PORT:-80}:80'   # パソコンの80番 → コンテナーの80番
+            - '${APP_HOST_IP:-127.0.0.1}:${APP_PORT:-80}:80'   # パソコンの80番 → コンテナーの80番
         volumes:
             - '.:/var/www/html'      # プロジェクトフォルダーをコンテナーと共有
         depends_on:
@@ -111,12 +111,14 @@ services:
     mysql:
         image: 'mysql:8.4'
         ports:
-            - '${FORWARD_DB_PORT:-3306}:3306'
+            - '127.0.0.1:${FORWARD_DB_PORT:-3306}:3306'
         volumes:
             - 'sail-mysql:/var/lib/mysql'  # データをボリュームに保存
     redis:
         image: 'redis:alpine'
 ```
+
+`ports` の先頭の `127.0.0.1` は、パソコン自身からの接続だけを受け付けるという指定です。Sailが作る compose.yaml にはこの指定がなく、そのままだと、同じWi-Fiにつながったほかの機器からも、APIやデータベースに接続できてしまいます。カフェや会社のネットワークで開発することもあるので、本書では compose.yaml の laravel.test、mysql、redis の `ports` を上のように書き換えておきます（redis は `'127.0.0.1:${FORWARD_REDIS_PORT:-6379}:6379'`）。書き換えたら `sail up -d` で起動し直します。スマートフォンの実機から試すとき（第15章）だけ、`.env` で `APP_HOST_IP=0.0.0.0` にして開けます。
 
 `volumes` で手元のフォルダーとコンテナーをつないでいるため、エディターでファイルを保存すると、すぐにコンテナー内のPHPに反映されます。
 

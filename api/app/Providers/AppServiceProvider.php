@@ -7,6 +7,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Events\DiagnosingHealth;
+use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -37,6 +38,12 @@ class AppServiceProvider extends ServiceProvider
             URL::forceScheme('https');
         }
 
+        // HTTPSを前段のロードバランサーで終端する構成のため、そのサーバーだけを信頼する（第12章）。
+        // すべてを信頼すると、X-Forwarded-For を偽ってIPアドレスごとの回数制限をすり抜けられる
+        if ($proxies = config('app.trusted_proxies')) {
+            TrustProxies::at(array_map(trim(...), explode(',', $proxies)));
+        }
+
         $this->configureRateLimiting();
         $this->configureQueryLogging();
         $this->configureHealthCheck();
@@ -50,11 +57,12 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
         });
 
-        // ログインと登録：メールアドレスとIPアドレスの組ごとに1分5回
+        // ログインと登録：アカウントごとに1分5回、IPアドレスごとに1分20回。どちらかを超えたら429
         RateLimiter::for('login', function (Request $request) {
-            $key = Str::lower((string) $request->input('email')).'|'.$request->ip();
-
-            return Limit::perMinute(5)->by($key);
+            return [
+                Limit::perMinute(5)->by('email:'.Str::lower((string) $request->input('email'))),
+                Limit::perMinute(20)->by('ip:'.$request->ip()),
+            ];
         });
 
         // MCPサーバー：ユーザーごとに1分30回

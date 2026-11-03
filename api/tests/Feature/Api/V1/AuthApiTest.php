@@ -60,4 +60,30 @@ class AuthApiTest extends TestCase
 
         $this->postJson('/api/v1/login', $payload)->assertTooManyRequests();   // 6回目は429
     }
+
+    public function test_login_is_rate_limited_per_ip_across_accounts(): void
+    {
+        // アカウントを変えながら試しても、同じIPアドレスからは1分20回まで
+        for ($i = 0; $i < 20; $i++) {
+            $this->postJson('/api/v1/login', ['email' => "user{$i}@example.com", 'password' => 'x', 'device_name' => 'test'])
+                ->assertUnprocessable();
+        }
+
+        $this->postJson('/api/v1/login', ['email' => 'user20@example.com', 'password' => 'x', 'device_name' => 'test'])
+            ->assertTooManyRequests();
+    }
+
+    public function test_forwarded_for_header_is_ignored_without_trusted_proxies(): void
+    {
+        // 信頼するプロキシを設定していなければ、X-Forwarded-For を変えても別のIPアドレスとは扱わない
+        for ($i = 0; $i < 20; $i++) {
+            $this->withHeader('X-Forwarded-For', "203.0.113.{$i}")
+                ->postJson('/api/v1/login', ['email' => "user{$i}@example.com", 'password' => 'x', 'device_name' => 'test'])
+                ->assertUnprocessable();
+        }
+
+        $this->withHeader('X-Forwarded-For', '203.0.113.99')
+            ->postJson('/api/v1/login', ['email' => 'user99@example.com', 'password' => 'x', 'device_name' => 'test'])
+            ->assertTooManyRequests();
+    }
 }

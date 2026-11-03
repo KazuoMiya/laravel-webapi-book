@@ -336,7 +336,7 @@ Swagger UIは、OpenAPIの仕様書を見やすい画面で表示するツール
     swagger-ui:
         image: 'swaggerapi/swagger-ui'
         ports:
-            - '8081:8080'
+            - '127.0.0.1:8081:8080'   # パソコン自身からだけ開ける（第3章）
         environment:
             SWAGGER_JSON: /spec/openapi.yaml
         volumes:

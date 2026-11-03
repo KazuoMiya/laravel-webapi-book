@@ -109,6 +109,8 @@ Schema::create('team_invitations', function (Blueprint $table) {
     $table->timestamp('expires_at');
     $table->timestamp('accepted_at')->nullable();
     $table->timestamps();
+
+    $table->index(['team_id', 'email']);   // 同じ人への招待を探して消すため
 });
 ```
 
@@ -507,12 +509,13 @@ class TeamController extends Controller
 
 ## 11.6 招待
 
-招待は、「招待コードを知っていること」がチームに入る権限になる仕組みです。コードが漏れたり推測されたりすると、知らない人がチームに入れてしまいます。そこで次の4つの対策をします。
+招待は、「招待コードを知っていること」がチームに入る権限になる仕組みです。コードが漏れたり推測されたりすると、知らない人がチームに入れてしまいます。そこで次の5つの対策をします。
 
 - 推測できない十分に長いランダムな文字列にする
 - データベースにはハッシュ化した値だけを保存する（データベースが漏れても使えない）
 - 有効期限を設け、1回使ったら無効にする
 - 招待したメールアドレスと、受け取るユーザーのメールアドレスが一致することを確かめる
+- 同じ人あての使える招待は、いつも1通だけにする。送り直したときと、招待を受けたとき、メンバーから外したときに、残りの招待を消す
 
 第5章の設計判断メモで「招待のように知っていること自体が権限になるものには、推測されやすいIDを使わない」と書いたのは、この場面のことです。
 
@@ -530,6 +533,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Team;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -546,15 +550,24 @@ class TeamInvitationController extends Controller
             'role' => ['required', Rule::in(['admin', 'member', 'viewer'])],
         ]);
 
+        $email = Str::lower($validated['email']);
         $plainToken = Str::random(40);
 
-        $invitation = $team->invitations()->create([
-            'email' => Str::lower($validated['email']),
-            'role' => $validated['role'],
-            'token_hash' => hash('sha256', $plainToken),
-            'expires_at' => now()->addDays(7),
-            'invited_by' => $request->user()->id,
-        ]);
+        $invitation = DB::transaction(function () use ($request, $team, $email, $validated, $plainToken) {
+            // 同じチームへの招待が同時に作られないよう、チームの行をロックする
+            Team::query()->whereKey($team->id)->lockForUpdate()->first();
+
+            // 同じ人への未使用の招待は消す。送り直したら、最新の1通だけが使える
+            $team->invitations()->where('email', $email)->whereNull('accepted_at')->delete();
+
+            return $team->invitations()->create([
+                'email' => $email,
+                'role' => $validated['role'],
+                'token_hash' => hash('sha256', $plainToken),
+                'expires_at' => now()->addDays(7),
+                'invited_by' => $request->user()->id,
+            ]);
+        });
 
         // 招待コードはメールでだけ伝え、APIの応答には含めない
         Mail::raw(
@@ -616,6 +629,12 @@ class AcceptInvitationController extends Controller
             $invitation->team->members()->attach($user->id, ['role' => $invitation->role->value]);
             $invitation->update(['accepted_at' => now()]);
 
+            // 同じ人あてに残っているほかの招待は消す。あとで外されたときに、それで戻れないようにする
+            $invitation->team->invitations()
+                ->where('email', $invitation->email)
+                ->whereNull('accepted_at')
+                ->delete();
+
             return $invitation->team;
         });
 
@@ -627,6 +646,8 @@ class AcceptInvitationController extends Controller
 失敗の理由（期限切れ、使用済み、宛先違い）をあえて区別せずに404で返しています。理由を細かく返すと、第三者が招待コードを試すときの手がかりになるからです。ログイン失敗の理由を詳しく返さなかった第10章と同じ考え方です。
 
 すでにメンバーの人が招待を受けたときは、409 Conflict を返します。リクエストは正しいが、今のデータの状態と矛盾していて処理できない、という意味のステータスコードです。
+
+招待を作るときと受けるときに、同じ人あての未使用の招待を消しているのは、古い招待が「チームに入れる権利」として残り続けないようにするためです。招待を送り直すと、前の招待メールのコードは使えなくなります。招待を受けたときに残りを消しておくと、あとでこの人をチームから外したとき（11.9節）に、手元に残っていた別の招待メールで戻ってくることもできません。招待を作る処理では、チームの行をロックしてから古い招待を消しています。2人の管理者が同時に送り直しても、使える招待が2通できないようにするためです。
 
 ## 11.7 チームのタスク
 
@@ -1044,7 +1065,9 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class TeamMemberController extends Controller
@@ -1080,12 +1103,19 @@ class TeamMemberController extends Controller
 
         abort_if($team->roleOf($user) === TeamRole::Owner, 422, 'オーナーはチームから外せません。');
 
-        $team->members()->detach($user->id);
+        DB::transaction(function () use ($team, $user) {
+            $team->members()->detach($user->id);
+
+            // 外した人あての未使用の招待も消す。残っていると、外した直後にその招待で戻れてしまう
+            $team->invitations()->where('email', Str::lower($user->email))->whereNull('accepted_at')->delete();
+        });
 
         return response()->noContent();
     }
 }
 ```
+
+メンバーを外すときは、その人あての未使用の招待も同じトランザクションで消します。外す前に送っていた招待が残っていると、外された人がそのコードで自分から戻れてしまうからです。権限を取り上げる操作では、「その権限を取り戻す手段」が残っていないかも確かめましょう。
 
 ## 11.10 ルートを追加して動作を確かめる
 
@@ -1194,6 +1224,7 @@ $ curl -X POST http://localhost/api/v1/invitations/招待コード/accept \
 - 役割と権限を表で決め、列挙型とPolicyでその表をコードにする
 - メンバー以外には404、権限が足りないメンバーには403を返す
 - 招待コードは長くランダムにし、ハッシュ化して保存し、期限と使用回数を制限する
+- 送り直し、招待の受け入れ、メンバーの除外のたびに、同じ人あての古い招待を消す
 - 同時編集による上書きは、ETag、If-Match、412で防ぐ
 
 ## 演習
@@ -1209,6 +1240,7 @@ $ curl -X POST http://localhost/api/v1/invitations/招待コード/accept \
 - [ ] team\_id を利用者の入力から設定していない
 - [ ] メンバー以外には404、権限が足りないメンバーには403を返している
 - [ ] 招待コードを平文で保存したり、APIの応答に含めたりしていない
+- [ ] メンバーを外したあと、古い招待でチームに戻れない
 - [ ] チームのタスクの更新で If-Match を確かめている
 
 ---

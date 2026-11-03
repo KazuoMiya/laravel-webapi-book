@@ -18,6 +18,8 @@ return new class extends Migration
             $table->timestamp('expires_at');
             $table->timestamp('accepted_at')->nullable();
             $table->timestamps();
+
+            $table->index(['team_id', 'email']);   // 同じ人への招待を探して消すため
         });
     }
 

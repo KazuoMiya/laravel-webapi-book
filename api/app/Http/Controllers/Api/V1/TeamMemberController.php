@@ -10,7 +10,9 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class TeamMemberController extends Controller
@@ -46,7 +48,12 @@ class TeamMemberController extends Controller
 
         abort_if($team->roleOf($user) === TeamRole::Owner, 422, 'オーナーはチームから外せません。');
 
-        $team->members()->detach($user->id);
+        DB::transaction(function () use ($team, $user) {
+            $team->members()->detach($user->id);
+
+            // 外した人あての未使用の招待も消す。残っていると、外した直後にその招待で戻れてしまう
+            $team->invitations()->where('email', Str::lower($user->email))->whereNull('accepted_at')->delete();
+        });
 
         return response()->noContent();
     }

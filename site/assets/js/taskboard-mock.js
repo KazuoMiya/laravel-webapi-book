@@ -1072,7 +1072,9 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
       if (found.login) {
         const apiHeaders = ctx.rateHeaders;
         const email = String(ctx.input.email ?? '').toLowerCase();
-        throttle(ctx, 'login', 5, `${email}|127.0.0.1`);
+        // アカウントごとに1分5回、IPアドレスごとに1分20回（AppServiceProvider と同じ）
+        throttle(ctx, 'login', 5, `email:${email}`);
+        throttle(ctx, 'login', 20, 'ip:127.0.0.1');
         ctx.rateHeaders = apiHeaders;
       }
       if (ctx.isAgent) throw new HttpError(403, 'エージェント用のトークンでは、このAPIは使えません。');

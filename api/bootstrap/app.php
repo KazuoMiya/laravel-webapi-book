@@ -32,9 +32,6 @@ return Application::configure(basePath: dirname(__DIR__))
             'block-agent-tokens' => BlockAgentTokens::class,   // 第16章
             'idempotent' => EnsureIdempotency::class,          // 第16章
         ]);
-
-        // HTTPSを前段のロードバランサーで終端する構成のため（第12章）
-        $middleware->trustProxies(at: '*');   // 本番では前段のサーバーのIPアドレスに絞る
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // /api 以下で起きた例外は、ルートが決まる前の失敗（405など）も含めてJSONで返す（第9章）

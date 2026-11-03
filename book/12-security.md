@@ -67,14 +67,17 @@ public function boot(): void
         return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
     });
 
-    // ログインと登録：メールアドレスとIPアドレスの組ごとに1分5回
+    // ログインと登録：アカウントごとに1分5回、IPアドレスごとに1分20回。どちらかを超えたら429
     RateLimiter::for('login', function (Request $request) {
-        $key = Str::lower((string) $request->input('email')).'|'.$request->ip();
-
-        return Limit::perMinute(5)->by($key);
+        return [
+            Limit::perMinute(5)->by('email:'.Str::lower((string) $request->input('email'))),
+            Limit::perMinute(20)->by('ip:'.$request->ip()),
+        ];
     });
 }
 ```
+
+ログインの制限は、2つの数え方を配列で返しています。アカウントごとの制限は、1つのアカウントのパスワードを、IPアドレスを変えながら試す攻撃を止めます。IPアドレスごとの制限は、1か所から多くのアカウントを順に試す攻撃を止めます。メールアドレスとIPアドレスの組で数えると、どちらか一方を変えるだけで数え直しになってしまいます。`by()` に渡す値の先頭に `email:` と `ip:` を付けているのは、2つの記録が混ざらないようにするためです。
 
 ルートに `throttle` ミドルウェアで適用します。
 
@@ -105,11 +108,11 @@ SPA用の `routes/web.php` の /login にも、同じように `->middleware('th
 
 > 設計判断メモ：回数制限の単位
 >
-> 決めたこと：通常のAPIは、ログイン中ならユーザーごと、未ログインならIPアドレスごとに数える。ログインと登録は、メールアドレスとIPアドレスの組ごとに数える。
+> 決めたこと：通常のAPIは、ログイン中ならユーザーごと、未ログインならIPアドレスごとに数える。ログインと登録は、アカウントごと（1分5回）とIPアドレスごと（1分20回）の2つで数える。
 >
-> 選ばなかった案：IPアドレスだけで数える方法は、会社や学校のように多くの人が同じIPアドレスを使う場所で、無関係な人まで制限してしまう。トークンごとに数える方法は、1人がトークンをいくつも作れば制限をすり抜けられる。
+> 選ばなかった案：IPアドレスだけで数える方法は、会社や学校のように多くの人が同じIPアドレスを使う場所で、無関係な人まで制限してしまう。トークンごとに数える方法は、1人がトークンをいくつも作れば制限をすり抜けられる。ログインをメールアドレスとIPアドレスの組で数える方法は、どちらか一方を変えれば数え直しになる。
 >
-> 理由：正しい利用者を巻き込まずに、攻撃や過剰なリクエストだけを止めやすい。
+> 理由：正しい利用者を巻き込まずに、攻撃や過剰なリクエストだけを止めやすい。アカウントごとの制限には、他人が間違ったパスワードを送り続けると本人も1分間ログインできなくなる副作用がある。1分で解けることと、総当たりを止める効果を比べて受け入れている。
 >
 > 見直す条件：第18章のように、429の分布を見て攻撃の傾向が変わったとき。
 
@@ -158,17 +161,34 @@ $query->whereRaw('YEAR(due_date) = ?', [$year]);
 
 APIトークンやCookieは、それ自体がログインの証明です。通信が暗号化されていないと、途中で盗み見られてそのまま悪用されます。本番環境では必ずHTTPSを使います。
 
-HTTPSの終端をロードバランサーなどの前段で行う構成では、Laravelからは通信がHTTPに見えます。その場合は前段のサーバーを信頼する設定をして、生成するURLを https にそろえます。
+HTTPSの終端をロードバランサーなどの前段で行う構成では、Laravelからは通信がHTTPに見えます。利用者のIPアドレスも、前段のサーバーのものに見えます。その場合は前段のサーバーを信頼する設定をして、前段が付ける X-Forwarded-For などのヘッダーから、本来の値を読めるようにします。あわせて、生成するURLを https にそろえます。
 
 ```php
-// bootstrap/app.php の withMiddleware の中
-$middleware->trustProxies(at: '*');   // 本番では前段のサーバーのIPアドレスに絞る
+// config/app.php に追加する
+'trusted_proxies' => env('TRUSTED_PROXIES'),   // 例：10.0.0.0/8 や 10.0.1.5,10.0.1.6
+```
 
-// AppServiceProvider の boot() の中
-if ($this->app->isProduction()) {
-    \Illuminate\Support\Facades\URL::forceScheme('https');
+```php
+// app/Providers/AppServiceProvider.php
+use Illuminate\Http\Middleware\TrustProxies;
+use Illuminate\Support\Facades\URL;
+
+public function boot(): void
+{
+    // ...12.3節の回数制限などはそのまま
+
+    if ($this->app->isProduction()) {
+        URL::forceScheme('https');
+    }
+
+    // 前段のサーバーだけを信頼する。未設定なら、どのプロキシも信頼しない
+    if ($proxies = config('app.trusted_proxies')) {
+        TrustProxies::at(array_map(trim(...), explode(',', $proxies)));
+    }
 }
 ```
+
+信頼するのは、前段のサーバーのIPアドレスだけにします。`'*'`（すべてを信頼する）にすると、利用者が自分で X-Forwarded-For ヘッダーを付けるだけで、好きなIPアドレスになりすませます。12.3節のIPアドレスごとの回数制限も、リクエストのたびに別のIPアドレスを名乗ればすり抜けられてしまいます。開発環境のように前段のサーバーがないときは、`TRUSTED_PROXIES` を空のままにします。値を `.env` から直接 `env()` で読まず、config/app.php を通しているのは、`sail artisan config:cache` で設定をキャッシュした本番環境では、`env()` が `.env` の値を返さないためです。
 
 あわせて、ブラウザーに安全な扱いを指示する応答ヘッダーを付けるミドルウェアを用意します。
 
@@ -270,6 +290,7 @@ $ sail composer audit
 
 - [ ] 自分やチームから始まる問い合わせで、他人のデータを取得できないようにしている
 - [ ] CORSの許可を、具体的なオリジンに絞っている
+- [ ] 信頼するプロキシを、前段のサーバーのIPアドレスに絞っている（`'*'` にしていない）
 - [ ] ログイン、登録、招待に回数制限がある
 - [ ] SQLの文字列に入力値を直接埋め込んでいない
 - [ ] 秘密情報がGitやログに出ていない
