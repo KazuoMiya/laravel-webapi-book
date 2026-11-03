@@ -223,8 +223,6 @@ class Renderer:
 
 # ---------- ページの組み立て ----------
 
-FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-         '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">')
 EARLY = ("<script>try{var d=document.documentElement,t=localStorage.getItem('tb-theme');if(t)d.dataset.theme=t;"
          "d.dataset.mode=localStorage.getItem('tb-mode')||'browser'}catch(e){document.documentElement.dataset.mode='browser'}</script>")
 
@@ -239,7 +237,6 @@ def head(title: str, root: str, description: str) -> str:
 <meta name="tb-root" content="{root}">
 <title>{html.escape(title)}</title>
 {EARLY}
-{FONTS}
 <link rel="stylesheet" href="{root}assets/book.css">
 <link rel="icon" href="{root}assets/favicon.svg" type="image/svg+xml">
 <script type="module" src="{root}assets/js/book.js"></script>

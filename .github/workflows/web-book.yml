@@ -7,10 +7,10 @@ on:
     paths: ['book/**', 'site/**', '.github/workflows/web-book.yml']
   workflow_dispatch:
 
+# 既定は読み取りだけにして、公開に要る権限は deploy ジョブにだけ与える。
+# 使うアクションは、タグではなくコミットのSHAで固定する（タグが付け替えられても中身が変わらない）
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -19,31 +19,40 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read     # configure-pages が、Pages の設定を読むため
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.13'
 
       - name: 必要なパッケージのインストール
         run: pip install -r site/requirements.txt
 
+      - name: 模擬APIとコンソールのテスト
+        run: node site/tests/mock.test.mjs
+
       - name: Web版を作る（PHPの実行環境もここで取得する）
         run: python site/build.py --out _site
 
-      - uses: actions/configure-pages@v6
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
 
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: _site
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

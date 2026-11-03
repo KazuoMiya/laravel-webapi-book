@@ -1,11 +1,12 @@
 // 本文のPHPのコードに「実行」と「編集」を付ける。PHPはブラウザーの中（ワーカー）で動く
 let runnerPromise = null;
-let loadedOnce = false;
 
 function runner() {
   runnerPromise ??= import(new URL('../php/php-runner.js', import.meta.url).href);
   return runnerPromise;
 }
+
+const mb = (bytes) => (bytes / 1e6).toFixed(1);
 
 function prepare(code) {
   // 本文には <?php を省いた断片もあるので、行番号が変わらないよう1行目の前に足す
@@ -74,52 +75,126 @@ export function mountPhp(block, { editable = false, initial = null } = {}) {
     }
   });
 
+  function button(label, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-quiet';
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  // 実行環境の読み込み中の表示。進み具合と、取りやめるボタンを出す
+  function showLoading(r, cancel) {
+    output.className = 'php-output is-running';
+    const box = document.createElement('div');
+    box.className = 'php-load';
+    const text = document.createElement('p');
+    text.className = 'php-load-text';
+    text.textContent = 'PHPの実行環境を読み込んでいます。初回だけ約21MBを読み込みます。';
+    const bar = document.createElement('progress');
+    bar.className = 'php-load-bar';
+    const actions = document.createElement('div');
+    actions.className = 'php-load-actions';
+    actions.append(button('取りやめる', cancel));
+    box.append(text, bar, actions);
+    output.replaceChildren(box);
+    return r.onProgress(({ loaded, total }) => {
+      bar.max = total;
+      bar.value = loaded;
+      text.textContent = loaded >= total
+        ? 'PHPの実行環境を起動しています…'
+        : `PHPの実行環境を読み込んでいます（${mb(loaded)}MB／${mb(total)}MB）。初回だけで、次からは読み込みません。`;
+    });
+  }
+
+  function showResult(result, cancelledByReader) {
+    output.replaceChildren();
+    const head = document.createElement('div');
+    head.className = 'php-output-head';
+    const body = document.createElement('pre');
+    body.className = 'php-output-body';
+    output.append(head, body);
+    if (result.cancelled) {
+      output.className = 'php-output is-error';
+      head.textContent = cancelledByReader ? '読み込みを取りやめました' : '実行を取りやめました';
+      body.textContent = cancelledByReader
+        ? '通信量が気になるときは、Wi-Fiにつないでから試すか、第2章の手順で手元のPHPを使ってください。'
+        : 'ほかのコードが時間切れで止められたため、このコードも止まりました。もう一度実行してください。';
+      output.append(retryRow('もう一度実行する'));
+      return;
+    }
+    if (result.timeout) {
+      output.className = 'php-output is-error';
+      head.textContent = '10秒たっても終わらなかったので止めました';
+      body.textContent = '無限ループになっていないかを確かめてください。次に実行するときは、実行環境を読み込み直します。';
+      return;
+    }
+    if (result.error) {
+      output.className = 'php-output is-error';
+      head.textContent = 'PHPを動かせませんでした';
+      body.textContent = result.error;
+      output.append(retryRow('もう一度試す'));
+      return;
+    }
+    const failed = result.exitCode !== 0 || /\n(Fatal error|Parse error):/.test(result.output);
+    output.className = `php-output ${failed ? 'is-error' : 'is-ok'}`;
+    head.textContent = `出力（PHP 8.5・${Math.round(result.elapsed ?? 0)}ms${failed ? '・エラーで終了' : ''}）`;
+    let text = result.output === '' ? '（何も出力されませんでした）' : result.output.replace(/^\n/, '');
+    if (result.truncated) text += '\n\n（出力が長すぎるため、ここから先は省きました）';
+    body.textContent = text;
+    if (document.documentElement.dataset.mode === 'local') {
+      const tip = document.createElement('p');
+      tip.className = 'php-output-tip';
+      tip.textContent = '手元で試すときは、ファイルに保存して、第2章の冒頭の docker run のコマンドか sail php ファイル名.php で実行します。';
+      output.append(tip);
+    }
+  }
+
+  function retryRow(label) {
+    const row = document.createElement('div');
+    row.className = 'php-output-actions';
+    row.append(button(label, run));
+    return row;
+  }
+
   async function run() {
+    if (runBtn.disabled) return;
     const code = editor ? editor.value : codeEl.textContent;
     runBtn.disabled = true;
     output.hidden = false;
-    output.className = 'php-output is-running';
-    output.textContent = loadedOnce
-      ? '実行しています…'
-      : 'PHPの実行環境を読み込んでいます。初回だけ約21MBを読み込むため、少し時間がかかります…';
-    const started = performance.now();
+    let cancelledByReader = false;
+    let stopListening = () => {};
     try {
-      const { runPHP } = await runner();
-      const result = await runPHP(prepare(code));
-      loadedOnce = true;
-      output.replaceChildren();
-      const head = document.createElement('div');
-      head.className = 'php-output-head';
-      const body = document.createElement('pre');
-      body.className = 'php-output-body';
-      if (result.timeout) {
-        output.className = 'php-output is-error';
-        head.textContent = '10秒たっても終わらなかったので止めました';
-        body.textContent = '無限ループになっていないかを確かめてください。';
-      } else if (result.error) {
-        output.className = 'php-output is-error';
-        head.textContent = 'PHPを動かせませんでした';
-        body.textContent = result.error;
+      const r = await runner();
+      if (r.isReady()) {
+        output.className = 'php-output is-running';
+        output.textContent = '実行しています…';
       } else {
-        const failed = result.exitCode !== 0 || /\n(Fatal error|Parse error):/.test(result.output);
-        output.className = `php-output ${failed ? 'is-error' : 'is-ok'}`;
-        head.textContent = `出力（PHP 8.5・${Math.round(performance.now() - started)}ms${failed ? '・エラーで終了' : ''}）`;
-        body.textContent = result.output === '' ? '（何も出力されませんでした）' : result.output.replace(/^\n/, '');
+        stopListening = showLoading(r, () => { cancelledByReader = true; r.cancelLoading(); });
+        r.preload().then(() => {
+          stopListening();
+          if (output.classList.contains('is-running')) output.textContent = '実行しています…';
+        }, () => {});
       }
-      output.append(head, body);
-      if (document.documentElement.dataset.mode === 'local') {
-        const tip = document.createElement('p');
-        tip.className = 'php-output-tip';
-        tip.textContent = '手元で試すときは、ファイルに保存して、第2章の冒頭の docker run のコマンドか sail php ファイル名.php で実行します。';
-        output.append(tip);
-      }
+      const result = await r.runPHP(prepare(code));
+      showResult(result, cancelledByReader);
     } catch (error) {
       output.className = 'php-output is-error';
       output.textContent = `PHPの実行環境を読み込めませんでした（${error.message}）。ページを再読み込みして、もう一度試してください。`;
     } finally {
+      stopListening();
       runBtn.disabled = false;
     }
   }
+
+  // マウスを「実行」に重ねたら、押される前に読み込みを始めておく（データ節約の設定のときはしない）
+  let warmTimer = null;
+  runBtn.addEventListener('pointerenter', (e) => {
+    if (e.pointerType !== 'mouse' || navigator.connection?.saveData) return;
+    warmTimer = setTimeout(() => runner().then((r) => r.preload()).catch(() => {}), 250);
+  });
+  runBtn.addEventListener('pointerleave', () => clearTimeout(warmTimer));
 
   runBtn.addEventListener('click', run);
   if (editable) openEditor();

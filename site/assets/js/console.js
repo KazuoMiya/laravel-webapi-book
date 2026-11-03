@@ -3,7 +3,13 @@ import { createMockApi } from './taskboard-mock.js';
 import { splitCommands, parseCurl, parseAssign } from './curl.js';
 import { getMode, setMode, onModeChange, readJSON, writeJSON } from './prefs.js';
 
-const VARS_KEY = 'tb-console-vars';
+// 模擬APIの変数（架空のトークン）だけをブラウザーに保存する。手元のAPIの本物のトークンは、
+// このページを開いている間だけメモリーに置き、閉じたり再読み込みしたりすると消える
+const MOCK_VARS_KEY = 'tb-console-vars-mock';
+const LOCAL_BASE_KEY = 'tb-local-api';
+const BOOK_ORIGIN = 'http://localhost';   // 本文のコマンドに書いてあるAPIのオリジン
+// 認証情報なしで参照してよい外部のAPI（第1章）
+const PUBLIC_APIS = ['https://api.github.com'];
 const KNOWN_VARS = [
   { name: 'TOKEN', email: 'test@example.com', who: 'テストユーザー' },
   { name: 'MATE_TOKEN', email: 'mate@example.com', who: 'チームメイト' },
@@ -16,6 +22,9 @@ const STATUS_TEXT = {
   500: 'Internal Server Error', 503: 'Service Unavailable',
 };
 
+// 以前の版が保存していた変数（手元のAPIのトークンを含むことがある）は消す
+try { localStorage.removeItem('tb-console-vars'); } catch { /* 消せなくても続ける */ }
+
 let mock = null;
 const mails = [];
 function getMock() {
@@ -25,15 +34,36 @@ function getMock() {
   return mock;
 }
 
-// 変数は、送り先（模擬API／手元のAPI）ごとに分けて覚えておく
-function allVars() { return readJSON(VARS_KEY, { browser: {}, local: {} }); }
-function varsFor(mode) { return allVars()[mode] ?? {}; }
+const localVars = {};
+function varsFor(mode) {
+  return mode === 'local' ? localVars : readJSON(MOCK_VARS_KEY, {});
+}
 function setVar(mode, name, value) {
-  const all = allVars();
-  all[mode] ??= {};
-  if (value === null) delete all[mode][name]; else all[mode][name] = value;
-  writeJSON(VARS_KEY, all);
+  if (mode === 'local') {
+    if (value === null) delete localVars[name]; else localVars[name] = value;
+  } else {
+    const vars = readJSON(MOCK_VARS_KEY, {});
+    if (value === null) delete vars[name]; else vars[name] = value;
+    writeJSON(MOCK_VARS_KEY, vars);
+  }
   window.dispatchEvent(new CustomEvent('tb-vars-change'));
+}
+
+// 手元のAPIのオリジン。localhost などの自分のパソコンだけを指定できる
+function localBase() {
+  let saved = '';
+  try { saved = localStorage.getItem(LOCAL_BASE_KEY) ?? ''; } catch { saved = ''; }
+  return normalizeLocalBase(saved) ?? BOOK_ORIGIN;
+}
+function normalizeLocalBase(value) {
+  try {
+    const url = new URL(value.trim());
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 function el(tag, attrs = {}, ...children) {
@@ -80,19 +110,49 @@ function shortToken(value) {
   return value.length > 14 ? `${value.slice(0, 10)}…` : value;
 }
 
-async function send(mode, request) {
-  const isLocalApi = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(request.url);
-  const started = performance.now();
-  if (isLocalApi && mode === 'browser') {
-    const r = await getMock().request(request);
-    return { ...r, via: 'mock', ms: Math.round(performance.now() - started) };
+function hasCredentials(headers) {
+  return Object.keys(headers).some((k) => ['authorization', 'cookie', 'proxy-authorization'].includes(k.toLowerCase()));
+}
+
+// 送り先を決める。認証情報を送ってよいのは、本書のAPI（模擬API、または設定した手元のAPIの /api/）だけ
+export function resolveTarget(mode, request, base = BOOK_ORIGIN) {
+  const url = new URL(request.url);
+  const isBookApi = url.origin === BOOK_ORIGIN || url.origin === base;
+  const credentialed = hasCredentials(request.headers);
+  if (isBookApi && mode === 'browser') return { via: 'mock', url: `${BOOK_ORIGIN}${url.pathname}${url.search}` };
+  if (isBookApi && mode === 'local') {
+    const target = `${base}${url.pathname}${url.search}`;
+    if (credentialed && !url.pathname.startsWith('/api/')) {
+      throw new Error('認証情報は、手元のAPIの /api/ 以下にだけ送ります。送り先のパスを確かめてください。');
+    }
+    return { via: 'local', url: target };
   }
-  const res = await fetch(request.url, {
+  if (credentialed) {
+    throw new Error(`認証情報（Authorization など）は、本書のAPIにだけ送ります。${url.origin} には送りません。`);
+  }
+  if (!PUBLIC_APIS.includes(url.origin)) {
+    throw new Error(`この画面から送れるのは、本書のAPIと ${PUBLIC_APIS.join('、')} だけです。ほかの送り先は、ターミナルの curl で試してください。`);
+  }
+  if (!['GET', 'HEAD'].includes(request.method) || request.body) {
+    throw new Error('外部のAPIには、データを送らない参照（GET）だけを送れます。');
+  }
+  return { via: 'internet', url: url.href };
+}
+
+async function send(mode, request) {
+  const target = resolveTarget(mode, request, localBase());
+  const started = performance.now();
+  if (target.via === 'mock') {
+    const r = await getMock().request({ ...request, url: target.url });
+    return { ...r, via: 'mock', url: target.url, ms: Math.round(performance.now() - started) };
+  }
+  const res = await fetch(target.url, {
     method: request.method,
     headers: request.headers,
     body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body ?? undefined,
     mode: 'cors',
     credentials: 'omit',
+    redirect: 'error',   // 別の送り先へ転送されても、ついて行かない
   });
   const body = request.method === 'HEAD' ? '' : await res.text();
   return {
@@ -100,7 +160,8 @@ async function send(mode, request) {
     statusText: res.statusText || STATUS_TEXT[res.status] || '',
     headers: [...res.headers.entries()].map(([k, v]) => [k.replace(/(^|-)([a-z])/g, (_, a, b) => a + b.toUpperCase()), v]),
     body,
-    via: isLocalApi ? 'local' : 'internet',
+    via: target.via,
+    url: target.url,
     ms: Math.round(performance.now() - started),
   };
 }
@@ -108,7 +169,7 @@ async function send(mode, request) {
 function renderResponse(result, request) {
   const box = el('div', { class: 'resp' });
   const family = Math.floor(result.status / 100);
-  const where = { mock: 'ブラウザー内の模擬API', local: '手元のAPI', internet: 'インターネット上のAPI' }[result.via];
+  const where = { mock: 'ブラウザー内の模擬API', local: `手元のAPI（${new URL(result.url).origin}）`, internet: 'インターネット上のAPI' }[result.via];
   box.append(el('div', { class: 'resp-status' },
     el('span', { class: `status-pill s${family}xx` }, String(result.status)),
     el('span', { class: 'resp-line' }, `HTTP/1.1 ${result.status} ${result.statusText}`),
@@ -131,6 +192,22 @@ function note(text, kind = 'info') {
   return el('p', { class: `cmd-note note-${kind}` }, text);
 }
 
+// 作成のリクエストか（個人のタスク、チームのタスク）
+export function isCreateTask(request) {
+  return request.method === 'POST' && /\/api\/v1\/(?:teams\/\d+\/)?tasks$/.test(new URL(request.url).pathname);
+}
+
+// 作成で返ったIDを、続くコマンドの /tasks/{id} に入れる。書き換えたコマンドの数を返す
+export function carryCreatedId(texts, createdId) {
+  let changed = 0;
+  const next = texts.map((text) => {
+    const replaced = text.replace(/\/tasks\/\d+(?=[/?\s"'\\]|$)/g, `/tasks/${createdId}`);
+    if (replaced !== text) changed++;
+    return replaced;
+  });
+  return { texts: next, changed };
+}
+
 export function mountConsole(codeBlock) {
   const source = codeBlock.querySelector('code').textContent;
   const entries = splitCommands(source);
@@ -139,27 +216,43 @@ export function mountConsole(codeBlock) {
   const panel = el('section', { class: 'console', 'aria-label': 'APIを試すコンソール' });
   const modeButtons = {};
   const seg = el('div', { class: 'seg', role: 'group', 'aria-label': 'リクエストの送り先' },
-    ...[['browser', 'ブラウザー内の模擬API'], ['local', '手元のAPI（localhost）']].map(([m, label]) => {
+    ...[['browser', 'ブラウザー内の模擬API'], ['local', '手元のAPI']].map(([m, label]) => {
       modeButtons[m] = el('button', { type: 'button', 'data-mode-value': m, onclick: () => setMode(m) }, label);
       return modeButtons[m];
     }));
   const head = el('div', { class: 'console-head' }, el('span', { class: 'console-title' }, 'その場で送ってみる'), seg);
-  const varsBar = el('div', { class: 'console-vars' });
   const hint = el('p', { class: 'console-hint' });
+  const baseInput = el('input', { type: 'url', class: 'base-input', spellcheck: 'false', 'aria-label': '手元のAPIのURL' });
+  const baseRow = el('label', { class: 'console-base' }, '手元のAPIのURL', baseInput,
+    el('span', { class: 'base-help' }, 'localhost か 127.0.0.1 だけを指定できます。'));
+  const varsBar = el('div', { class: 'console-vars' });
   const list = el('ol', { class: 'console-cmds' });
   const runAll = el('button', { type: 'button', class: 'btn btn-quiet' }, 'すべて順に送る');
   const reset = el('button', { type: 'button', class: 'btn btn-link' }, '模擬APIのデータを初期状態に戻す');
   const foot = el('div', { class: 'console-foot' }, runAll, reset);
-  panel.append(head, hint, varsBar, list, foot);
+  panel.append(head, hint, baseRow, varsBar, list, foot);
 
   const runners = [];
+
+  baseInput.addEventListener('change', () => {
+    const normalized = normalizeLocalBase(baseInput.value);
+    if (!normalized) {
+      baseInput.value = localBase();
+      hint.textContent = '手元のAPIのURLには、http://localhost や http://localhost:8080 のように、自分のパソコンを指すURLだけを指定できます。';
+      return;
+    }
+    try { localStorage.setItem(LOCAL_BASE_KEY, normalized); } catch { /* 保存できなくても、この場では使う */ }
+    baseInput.value = normalized;
+  });
 
   function refreshMode() {
     const mode = getMode();
     for (const [m, b] of Object.entries(modeButtons)) b.setAttribute('aria-pressed', String(m === mode));
     hint.textContent = mode === 'browser'
       ? 'localhost への送信は、このページの中で動く模擬API（本書の完成版と同じ動き）が受け取ります。シーダーと同じデータが入っています。'
-      : '手元のSailで動かしているAPI（http://localhost）に送ります。api フォルダーの README の「Web版から送る」の設定が必要です。';
+      : '手元のSailで動かしているAPIに送ります。api フォルダーの README の「Web版から送る」の設定が必要です。受け取ったトークンは、このページを閉じると消えます。';
+    baseRow.hidden = mode !== 'local';
+    baseInput.value = localBase();
     reset.hidden = mode !== 'browser';
     renderVars();
   }
@@ -193,9 +286,10 @@ export function mountConsole(codeBlock) {
 
   async function prepareToken(known) {
     const mode = getMode();
+    // 教材のアカウントのパスワード（シーダーと第10章の例）
     const body = JSON.stringify({ email: known.email, password: known.name === 'HANAKO_TOKEN' ? 'secret-pass' : 'password', device_name: 'web-book' });
     try {
-      const result = await send(mode, { method: 'POST', url: 'http://localhost/api/v1/login', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
+      const result = await send(mode, { method: 'POST', url: `${BOOK_ORIGIN}/api/v1/login`, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body });
       const token = JSON.parse(result.body || '{}')?.data?.token;
       if (token) setVar(mode, known.name, token);
       else hint.textContent = `ログインできませんでした（${result.status}）。${JSON.parse(result.body || '{}').message ?? ''}`;
@@ -206,6 +300,16 @@ export function mountConsole(codeBlock) {
 
   function connectionHelp(error) {
     return `手元のAPIに接続できませんでした（${error.message}）。Sailが起動しているか、api の .env に BOOK_SITE_URL を設定したかを確かめてください。うまくいかないときは、上の切り替えで「ブラウザー内の模擬API」に戻せます。`;
+  }
+
+  // 作成で返ったIDを、このコンソールの続くコマンドに入れる
+  function carryForward(fromRun, createdId, output) {
+    const later = runners.slice(runners.indexOf(fromRun) + 1).filter((r) => r.textarea);
+    const { texts, changed } = carryCreatedId(later.map((r) => r.textarea.value), createdId);
+    later.forEach((r, i) => { r.textarea.value = texts[i]; });
+    if (changed) {
+      output.append(note(`作成したタスクのIDは ${createdId} です。本文のIDは例なので、続く${changed}件のコマンドのIDを ${createdId} に書き換えました。`));
+    }
   }
 
   entries.forEach((entry) => {
@@ -224,7 +328,8 @@ export function mountConsole(codeBlock) {
     item.append(el('div', { class: 'cmd-row' }, el('span', { class: 'prompt', 'aria-hidden': 'true' }, '$'), textarea, button), output);
     list.append(item);
 
-    const run = async () => {
+    // 結果として { ok, stop } を返す。stop が true なら「すべて順に送る」をそこで止める
+    const run = async ({ confirmed = false } = {}) => {
       const mode = getMode();
       const vars = varsFor(mode);
       output.replaceChildren();
@@ -243,7 +348,7 @@ export function mountConsole(codeBlock) {
             }
             if (!token) {
               output.append(note('先にログインのcurlを送るか、この行の値を、受け取ったトークンに書き換えてから送ってください。', 'warn'));
-              return;
+              return { ok: false, stop: true };
             }
             setVar(mode, name, token);
             output.append(note(message));
@@ -251,7 +356,7 @@ export function mountConsole(codeBlock) {
             setVar(mode, name, value);
             output.append(note(`${name} に値を入れました。`));
           }
-          return;
+          return { ok: true };
         }
         let text = textarea.value.trim();
         const invite = vars.__last_invite;
@@ -260,13 +365,22 @@ export function mountConsole(codeBlock) {
           output.append(note('「招待コード」を、ログに書き出された招待コードに置き換えて送りました。'));
         }
         const request = parseCurl(text, vars);
+        const target = resolveTarget(mode, request, localBase());
+        // 手元のAPIへの削除は、送り先と対象を見せてから、押し直したときだけ送る
+        if (target.via === 'local' && request.method === 'DELETE' && !confirmed) {
+          const confirm = el('button', { type: 'button', class: 'btn btn-danger' }, '削除を送る');
+          confirm.addEventListener('click', () => run({ confirmed: true }));
+          output.append(el('div', { class: 'cmd-confirm' },
+            note(`手元のAPIの ${target.url} に DELETE を送ります。消えるのはこのURLが指すデータです。確かめてから押してください。`, 'warn'),
+            confirm));
+          return { ok: false, stop: true };
+        }
         if (request.missing.length) {
           output.append(note(`変数 ${request.missing.map((n) => `$${n}`).join('、')} が空のまま送りました。上の「ログインして入れる」で用意できます。`, 'warn'));
         }
         const mailCount = mails.length;
         const result = await send(mode, request);
         output.append(renderResponse(result, request));
-        // ログインや登録で受け取ったトークンを、変数に入れておく
         let data = null;
         try { data = JSON.parse(result.body || 'null'); } catch { data = null; }
         const usedVars = [...text.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)\}?/g)].map((m) => m[1]).filter((n) => vars[n]);
@@ -278,6 +392,7 @@ export function mountConsole(codeBlock) {
         if (result.status === 401 && usedVars.length) {
           output.append(note(`${usedVars.map((n) => `$${n}`).join('、')} のトークンは使えません（ログアウト済みか期限切れ）。上の欄の「ログインして入れる」か「入れ直す」で用意し直せます。`, 'warn'));
         }
+        // ログインや登録で受け取ったトークンを、変数に入れておく
         const token = data?.data?.token;
         if (token) {
           setVar(mode, '__last_token', token);
@@ -291,20 +406,13 @@ export function mountConsole(codeBlock) {
             output.append(note('受け取ったトークンを覚えました。次の TOKEN=... の行を実行すると、変数に入ります。'));
           }
         }
-        // 作成したタスクのIDを、続くコマンドに使えるようにする（本文のIDは例なので、環境ごとに違う）
-        const created = result.status === 201 && /\/api\/v1\/(?:teams\/\d+\/)?tasks$/.test(new URL(request.url).pathname) ? data?.data?.id : null;
-        if (created) {
-          const later = runners.slice(runners.indexOf(run) + 1).map((r) => r.textarea)
-            .filter((t) => new RegExp(`/tasks/(?!${created}\\b)\\d+`).test(t.value));
-          if (later.length) {
-            const fix = el('button', { type: 'button', class: 'btn btn-quiet' }, `続くコマンドのIDを ${created} に書き換える`);
-            fix.addEventListener('click', () => {
-              for (const t of later) t.value = t.value.replace(/\/tasks\/\d+/g, `/tasks/${created}`);
-              fix.disabled = true;
-              fix.textContent = `IDを ${created} に書き換えました`;
-            });
-            output.append(el('div', { class: 'cmd-fix' }, note(`作成したタスクのIDは ${created} です。本文のIDは例なので、続くコマンドのIDをこの値に書き換えられます。`), fix));
+        if (isCreateTask(request)) {
+          const createdId = result.status === 201 ? data?.data?.id : null;
+          if (!createdId) {
+            output.append(note('タスクを作成できなかったので、続くコマンドのIDは書き換えていません。「すべて順に送る」は、ここで止めます。', 'warn'));
+            return { ok: false, stop: true };
           }
+          carryForward(run, createdId, output);
         }
         for (const mail of mails.slice(mailCount)) {
           setVar(mode, '__last_invite', mail.code);
@@ -319,14 +427,16 @@ export function mountConsole(codeBlock) {
         if (result.via === 'internet') {
           output.append(note('ブラウザーから読めるヘッダーだけを表示しています。すべてを見るには、ターミナルの curl を使ってください。', 'muted'));
         }
+        return { ok: true };
       } catch (error) {
         output.append(note(error instanceof TypeError ? connectionHelp(error) : error.message, 'error'));
+        return { ok: false, stop: true };
       } finally {
         button.disabled = false;
       }
     };
     run.textarea = textarea;
-    button.addEventListener('click', run);
+    button.addEventListener('click', () => run());
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run(); }
     });
@@ -336,15 +446,16 @@ export function mountConsole(codeBlock) {
 
   runAll.addEventListener('click', async () => {
     runAll.disabled = true;
-    for (const run of runners) await run();
+    for (const run of runners) {
+      const outcome = await run();
+      if (outcome?.stop) break;
+    }
     runAll.disabled = false;
   });
   runAll.hidden = runners.length < 2;
   reset.addEventListener('click', () => {
     getMock().reset();
-    const all = allVars();
-    all.browser = {};
-    writeJSON(VARS_KEY, all);
+    writeJSON(MOCK_VARS_KEY, {});
     window.dispatchEvent(new CustomEvent('tb-vars-change'));
     hint.textContent = '模擬APIのデータを初期状態に戻し、トークンの変数を空にしました。';
   });

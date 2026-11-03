@@ -2,7 +2,8 @@
 // api フォルダーの完成版（第17章まで）と同じ URL、入力検証、ステータスコード、応答の形を再現する。
 // データは閲覧している人のブラウザーにだけ保存され、「初期状態に戻す」で作り直せる。
 
-const STORAGE_KEY = 'taskboard-mock-v1';
+const STORAGE_KEY = 'taskboard-mock-v2';
+const OLD_STORAGE_KEYS = ['taskboard-mock-v1'];   // 以前の版は、登録したパスワードを平文で保存していた
 const ORIGIN = 'http://localhost';
 const PRIORITY_KEYS = ['low', 'medium', 'high'];
 const ROLES = ['owner', 'admin', 'member', 'viewer'];
@@ -66,6 +67,57 @@ const TEAM_TITLES = [
 const OTHER_NAMES = ['佐藤 一郎', '鈴木 美咲', '高橋 健', '田中 由美', '伊藤 翔'];
 
 // ---------- 小さな道具 ----------
+
+// SHA-256（パスワードや招待コードを、そのままの形で保存しないために使う）
+const SHA_K = Uint32Array.from([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+export function sha256(text) {
+  const data = new TextEncoder().encode(String(text));
+  const bitLength = data.length * 8;
+  const padded = new Uint8Array(((data.length + 9 + 63) >> 6) << 6);
+  padded.set(data);
+  padded[data.length] = 0x80;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLength / 2 ** 32));
+  view.setUint32(padded.length - 4, bitLength >>> 0);
+  const h = Uint32Array.from([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const w = new Uint32Array(64);
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, k] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (k + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[i] + w[i]) >>> 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+      k = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += k;
+  }
+  return Array.from(h, (x) => x.toString(16).padStart(8, '0')).join('');
+}
+
+function passwordHash(password, salt) {
+  return `${salt}$${sha256(`${salt}:${password}`)}`;
+}
+
+function passwordMatches(password, stored) {
+  const [salt] = String(stored).split('$');
+  return passwordHash(password, salt) === stored;
+}
 
 function mulberry32(seed) {
   return () => {
@@ -268,7 +320,7 @@ function seedState(now = new Date()) {
   };
   const nextId = (table) => ++state.seq[table];
   const addUser = (name, email) => {
-    const user = { id: nextId('users'), name, email, password: 'password', created_at: created, updated_at: created };
+    const user = { id: nextId('users'), name, email, password_hash: passwordHash('password', `seed${state.seq.users}`), created_at: created, updated_at: created };
     state.users.push(user);
     return user;
   };
@@ -331,6 +383,7 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
 
   function load() {
     try {
+      for (const key of OLD_STORAGE_KEYS) storage?.removeItem(key);
       const saved = storage?.getItem(STORAGE_KEY);
       if (saved) return JSON.parse(saved);
     } catch { /* 保存できない環境では、毎回初期状態から始める */ }
@@ -486,8 +539,13 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
     if (lastPage <= 13) {
       for (let p = 1; p <= lastPage; p++) pages.push(p);
     } else {
+      // 現在のページの前後3ページ。ページ番号がどれだけ大きくても、繰り返しは7回まで
       const window = new Set([1, 2, lastPage - 1, lastPage]);
-      for (let p = page - 3; p <= page + 3; p++) if (p >= 1 && p <= lastPage) window.add(p);
+      const center = Math.min(Math.max(page, 1), lastPage);
+      for (let i = -3; i <= 3; i++) {
+        const p = center + i;
+        if (p >= 1 && p <= lastPage) window.add(p);
+      }
       const sorted = [...window].sort((a, b) => a - b);
       sorted.forEach((p, i) => { if (i > 0 && p - sorted[i - 1] > 1) pages.push('...'); pages.push(p); });
     }
@@ -639,7 +697,8 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
       device_name: ['sometimes', 'string', 'max:255'],
     });
     const now = iso(new Date());
-    const user = { id: nextId('users'), name: v.name, email: v.email, password: v.password, created_at: now, updated_at: now };
+    // 入力されたパスワードは、そのままの形では保存しない（このブラウザーに残るため）
+    const user = { id: nextId('users'), name: v.name, email: v.email, password_hash: passwordHash(v.password, randomString(16)), created_at: now, updated_at: now };
     state.users.push(user);
     return { status: 201, json: { data: { user: userResource(user), token: issueToken(user, v.device_name ?? 'api', ['*'], 30) } } };
   });
@@ -651,7 +710,7 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
       device_name: ['required', 'string', 'max:255'],
     });
     const user = state.users.find((u) => u.email === v.email);
-    if (!user || user.password !== v.password) {
+    if (!user || !passwordMatches(v.password, user.password_hash)) {
       throw new ValidationError({ email: ['メールアドレスまたはパスワードが正しくありません。'] });
     }
     return { status: 200, json: { data: { user: userResource(user), token: issueToken(user, v.device_name, ['*'], 30) } } };
@@ -834,12 +893,20 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
     return { status: 200, json: { data: { id: target.id, name: target.name, email: target.email, role: membership.role, joined_at: membership.created_at } } };
   });
 
+  // チームとメールアドレスの組で、まだ使われていない招待を失効させる（第11章）
+  function revokePendingInvitations(teamId, email) {
+    const lower = email.toLowerCase();
+    state.invitations = state.invitations.filter((i) => !(i.team_id === teamId && i.email === lower && !i.accepted_at));
+  }
+
   route('DELETE', '/api/v1/teams/{team}/members/{user}', AUTH, (ctx) => {
     const team = bindTeam(ctx.params.team);
     const target = bindUser(ctx.params.user);
     authorizeTeam(ctx, team, target.id === ctx.user.id ? 'view' : 'manageMembers');
     if (roleOf(team, target) === 'owner') throw new HttpError(422, 'オーナーはチームから外せません。');
     state.team_user = state.team_user.filter((m) => !(m.team_id === team.id && m.user_id === target.id));
+    // 外した人あての古い招待が残っていると、それを使って戻れてしまう
+    revokePendingInvitations(team.id, target.email);
     return { status: 204 };
   });
 
@@ -851,9 +918,11 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
       role: ['required', 'in:admin,member,viewer'],
     });
     const plain = randomString(40);
+    // 同じ人あての有効な招待は1件だけにする。送り直したら、前の招待は使えなくなる
+    revokePendingInvitations(team.id, v.email);
     const invitation = {
       id: nextId('invitations'), team_id: team.id, invited_by: ctx.user.id, email: v.email.toLowerCase(),
-      role: v.role, token: plain, expires_at: iso(addDays(new Date(), 7)), accepted_at: null, created_at: iso(new Date()),
+      role: v.role, token_hash: sha256(plain), expires_at: iso(addDays(new Date(), 7)), accepted_at: null, created_at: iso(new Date()),
     };
     state.invitations.push(invitation);
     // 開発環境ではメールは送られず、ログに書き出される（MAIL_MAILER=log）
@@ -867,13 +936,15 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
   });
 
   route('POST', '/api/v1/invitations/{token}/accept', AUTH, (ctx) => {
-    const invitation = state.invitations.find((i) => i.token === ctx.params.token && !i.accepted_at && new Date(i.expires_at) > new Date());
+    const hashed = sha256(ctx.params.token);
+    const invitation = state.invitations.find((i) => i.token_hash === hashed && !i.accepted_at && new Date(i.expires_at) > new Date());
     if (!invitation || invitation.email !== ctx.user.email.toLowerCase()) throw new HttpError(404, 'リソースが見つかりません。');
     const team = findTeam(invitation.team_id);
     if (!team) throw new HttpError(404, 'リソースが見つかりません。');
     if (roleOf(team, ctx.user)) throw new HttpError(409, 'すでにこのチームのメンバーです。');
     state.team_user.push({ team_id: team.id, user_id: ctx.user.id, role: invitation.role, created_at: iso(new Date()) });
     invitation.accepted_at = iso(new Date());
+    revokePendingInvitations(team.id, invitation.email);
     return { status: 200, json: { data: teamResource(team, ctx.user) } };
   });
 
@@ -1010,7 +1081,7 @@ export function createMockApi({ storage = null, onMail = () => {}, onLog = () =>
       let fingerprint = null;
       if (found.idempotent && lower['idempotency-key']) {
         idempotencyKey = `${ctx.user.id}|${ctx.method}|${ctx.path.slice(1)}|${lower['idempotency-key']}`;
-        fingerprint = body ?? '';
+        fingerprint = sha256(body ?? '');
         const saved = state.idempotency[idempotencyKey];
         if (saved && saved.expires > Date.now()) {
           if (saved.fingerprint !== fingerprint) {
