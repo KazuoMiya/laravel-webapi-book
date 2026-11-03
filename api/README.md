@@ -52,6 +52,16 @@ curl -s 'http://localhost/api/v1/tasks?is_done=false&sort=-priority' \
   -H 'Accept: application/json' -H 'Authorization: Bearer （受け取ったトークン）'
 ```
 
+## Web版から送る
+
+本書のWeb版では、curl の例にある「試す」から、このAPIにリクエストを送れます。画面上部の切り替えを「手元の環境で試す」にしてから使います。
+
+1. .env の BOOK_SITE_URL に、Web版のオリジン（https://ユーザー名.github.io のように、パスを含まない形）を書きます。
+2. `sail artisan config:clear` で設定を読み直します。
+3. Chrome、Edge、Firefox で開きます。httpsのページから http://localhost への送信を、Safariは止めてしまいます。Chromeで「ローカルネットワーク上のデバイスへのアクセス」を聞かれたら、許可します。
+
+この設定は、開発環境（APP_ENV=local）でだけ使われます。
+
 ## テスト
 
 ```bash

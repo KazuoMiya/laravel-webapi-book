@@ -1,0 +1,224 @@
+{
+  "title": "Laravelで学ぶ Web APIの作り方",
+  "subtitle": "タスク管理APIを題材に、考える・つくる・確かめる・届ける",
+  "parts": [
+    {
+      "name": null,
+      "chapters": [
+        "00-introduction"
+      ]
+    },
+    {
+      "name": "第1部 準備",
+      "chapters": [
+        "01-what-is-web-api",
+        "02-php-basics",
+        "03-docker",
+        "04-laravel-first-step"
+      ]
+    },
+    {
+      "name": "第2部 設計",
+      "chapters": [
+        "05-api-design",
+        "06-openapi"
+      ]
+    },
+    {
+      "name": "第3部 実装",
+      "chapters": [
+        "07-database-eloquent",
+        "08-crud-api",
+        "09-validation-errors",
+        "10-auth",
+        "11-teams",
+        "12-security"
+      ]
+    },
+    {
+      "name": "第4部 品質と開発の進め方",
+      "chapters": [
+        "13-testing",
+        "14-ai-assisted-development"
+      ]
+    },
+    {
+      "name": "第5部 利用と運用",
+      "chapters": [
+        "15-react-clients",
+        "16-ai-agents-mcp",
+        "17-operations",
+        "18-incident-drill"
+      ]
+    },
+    {
+      "name": "付録",
+      "chapters": [
+        "appendix"
+      ]
+    }
+  ],
+  "runnable_php": {
+    "02-php-basics": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      9,
+      12
+    ]
+  },
+  "php_playground": {
+    "02-php-basics": "## 演習"
+  },
+  "guide": {
+    "01-what-is-web-api": {
+      "browser": [
+        "curl の例にある「試す」で、GitHubの公開APIに実際にリクエストを送り、ステータスコードとJSONを確かめられます。"
+      ],
+      "local": [
+        "ターミナルで curl を実行します。macOS と Windows 11 には最初から入っています。"
+      ]
+    },
+    "02-php-basics": {
+      "browser": [
+        "PHPのコードにある「実行」で、ブラウザーの中のPHP 8.5が結果を表示します。「編集」で書き換えてから実行することもできます。",
+        "章末の演習は、最後にある入力欄で書いて試せます。"
+      ],
+      "local": [
+        "コードを sample.php などのファイルに保存し、この章の冒頭にある docker run のコマンドで実行できます（Docker Desktop が必要です）。第3章の後なら sail php ファイル名.php でも実行できます。"
+      ]
+    },
+    "03-docker": {
+      "browser": [
+        "この章はパソコンに開発環境を作る手順です。ブラウザーだけで進める場合は読むだけにして、APIの動きは第4章以降の「試す」で確かめます。"
+      ],
+      "local": [
+        "Docker Desktop を入れ、Sail でプロジェクトを作って起動します。初回はイメージの準備に数分かかります。"
+      ]
+    },
+    "04-laravel-first-step": {
+      "browser": [
+        "/api/hello などの curl の例を、ブラウザー内の模擬APIに送れます。コードを書く手順は読むだけになります。"
+      ],
+      "local": [
+        "routes/api.php とコントローラーを書き、curl と route:list で確かめます。"
+      ]
+    },
+    "05-api-design": {
+      "browser": [
+        "設計の章なので、読むことが中心です。ここで決めたURLやエラーの形は、第8章以降の「試す」で実際の応答として確かめられます。"
+      ],
+      "local": [
+        "読むことが中心です。設計した内容は、第6章の仕様書と第8章の実装に引き継ぎます。"
+      ]
+    },
+    "06-openapi": {
+      "browser": [
+        "仕様書の書き方を読みます。完成版の仕様書は、リポジトリの api/docs/openapi.yaml にあります。"
+      ],
+      "local": [
+        "Swagger UI（http://localhost:8081）で仕様書を表示し、Redocly CLI で書き方の誤りを確かめます。"
+      ]
+    },
+    "07-database-eloquent": {
+      "browser": [
+        "データベースの操作はブラウザーでは試せません。模擬APIにはこの章のシーダーと同じデータが入っているので、第8章で中身を確かめられます。"
+      ],
+      "local": [
+        "マイグレーションとシーダーを実行し、Tinker でモデルとリレーションを操作します。"
+      ]
+    },
+    "08-crud-api": {
+      "browser": [
+        "CRUD の curl の例を、模擬APIに送れます。トークンは、コンソールの「ログインして入れる」か、8.1節の TOKEN=... の行で用意できます。"
+      ],
+      "local": [
+        "Tinker でトークンを発行し、自分で実装したAPIに curl で送ります。"
+      ]
+    },
+    "09-validation-errors": {
+      "browser": [
+        "コマンドを書き換えて誤った値を送り、422の応答と日本語のメッセージを確かめられます。"
+      ],
+      "local": [
+        "フォームリクエストと言語ファイルを作り、同じ確かめ方を自分のAPIで行います。"
+      ]
+    },
+    "10-auth": {
+      "browser": [
+        "登録、ログイン、ログアウトの流れを、模擬APIで順に試せます。受け取ったトークンは自動で変数に入ります。"
+      ],
+      "local": [
+        "Sanctum を設定し、トークン認証とSPA認証を自分のAPIで確かめます。"
+      ]
+    },
+    "11-teams": {
+      "browser": [
+        "チーム、ETag と If-Match による衝突の検出、招待の流れを模擬APIで試せます。招待コードは「ログに書き出されたメール」に表示されます。"
+      ],
+      "local": [
+        "sail artisan pail でログを見ながら、招待までの流れを自分のAPIで試します。"
+      ]
+    },
+    "12-security": {
+      "browser": [
+        "ログインを続けて失敗させると、回数制限の429が返ります。応答のヘッダーで、セキュリティ用の設定も確かめられます。"
+      ],
+      "local": [
+        "CORS と回数制限を設定し、チェックリストで自分のAPIを見直します。"
+      ]
+    },
+    "13-testing": {
+      "browser": [
+        "テストの実行には手元の環境が必要です。テストが確かめている動き（他人のタスクが404になるなど）は、模擬APIでも確かめられます。"
+      ],
+      "local": [
+        "sail artisan test でテストを実行し、GitHub Actions で自動化します。"
+      ]
+    },
+    "14-ai-assisted-development": {
+      "browser": [
+        "AIツールの設定は手元の環境で行います。この章は、依頼の書き方とレビューの観点を読むことが中心です。"
+      ],
+      "local": [
+        "Laravel Boost を入れ、AIエージェントと一緒に GET /tasks/summary を追加します。"
+      ]
+    },
+    "15-react-clients": {
+      "browser": [
+        "Reactの画面を動かすには Node.js が必要です。画面から呼ぶAPIの応答は、模擬APIで確かめられます。"
+      ],
+      "local": [
+        "リポジトリの web と mobile のフォルダーで、ブラウザー版とスマートフォン版を動かします。"
+      ]
+    },
+    "16-ai-agents-mcp": {
+      "browser": [
+        "Idempotency-Key の例を模擬APIに2回送り、同じタスクが返ることを確かめられます。MCPサーバーは手元の環境で試します。"
+      ],
+      "local": [
+        "Laravel MCP を入れ、AIクライアントからMCPサーバーにつなぎます。"
+      ]
+    },
+    "17-operations": {
+      "browser": [
+        "応答ヘッダーの X-Request-Id は、模擬APIでも確かめられます。キュー、スケジューラー、イメージの作成は手元の環境で行います。"
+      ],
+      "local": [
+        "ログ、キャッシュ、キュー、スケジューラーを動かし、本番用のイメージを作ります。"
+      ]
+    },
+    "18-incident-drill": {
+      "browser": [
+        "症状から調べる順番と、ふりかえりの書き方を読むことが中心です。"
+      ],
+      "local": [
+        "第17章までの環境で、ドリルの再発防止策を自分のコードに加えます。"
+      ]
+    }
+  }
+}

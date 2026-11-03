@@ -53,7 +53,8 @@
 | [api](api) | TaskBoard API（Laravel 13）。全章を終えた時点の完成形 |
 | [web](web) | ブラウザー版のReactアプリ（第15章） |
 | [mobile](mobile) | スマートフォン版のアプリ（React NativeとExpo、第15章） |
-| [.github/workflows](.github/workflows) | APIのテストを自動で実行するGitHub Actions（第13章） |
+| [site](site) | Web版を作るプログラム。book の原稿から、コードを実行できるWeb書籍を作る |
+| [.github/workflows](.github/workflows) | APIのテスト（第13章）と、Web版の公開を自動で行うGitHub Actions |
 
 サンプルコードは、本文のコードを章の順に積み重ねた最終的な状態です。章の途中の状態は、本文の手順に沿って自分で作りながら確かめてください。動かし方は、各フォルダーのREADMEにまとめています。
 
@@ -67,6 +68,22 @@
 
 ## 読み方
 
-GitHubの画面で、目次から各章を開いて読めます。図はGitHubがそのまま描画します。各章の最後に、前後の章と目次へのリンクがあります。
+いちばんのおすすめは、GitHub Pages で公開するWeb版です。本文を読みながら、その場でPHPのコードを実行したり、APIにリクエストを送って応答を確かめたりできます。試し方は、インストールなしの「ブラウザーだけで試す」と、第3章で作る環境を使う「手元の環境で試す」から、そのときの状況に合わせて選べます。
+
+GitHubの画面でも、目次から各章を開いて読めます。図はGitHubがそのまま描画します。各章の最後に、前後の章と目次へのリンクがあります。
 
 手元で読む場合は、このリポジトリをクローンして、Markdownを表示できるエディター（Visual Studio Codeなど）で book フォルダーを開いてください。
+
+## Web版の公開と確認
+
+main ブランチに送ると、.github/workflows/web-book.yml が book の原稿からWeb版を作り、GitHub Pages に公開します。初回だけ、リポジトリの Settings の Pages で、Source を GitHub Actions にしてください。非公開のリポジトリから公開するには、GitHubの有料プランが必要です。
+
+手元で確かめるときは、Python 3.12以上で次のように実行し、http://localhost:8000 を開きます。
+
+```bash
+pip install -r site/requirements.txt
+python site/build.py
+python -m http.server 8000 --directory _site
+```
+
+ブラウザーでのPHPの実行には、WordPress Playground の php-wasm（PHP 8.5、GPL-2.0-or-later）を使います。site/build.py が、公開する前に GitHub から取得します（約21MB）。

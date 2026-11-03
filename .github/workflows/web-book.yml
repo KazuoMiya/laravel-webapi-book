@@ -1,0 +1,49 @@
+# book の原稿から、コードを実行できるWeb版を作り、GitHub Pages に公開する
+name: web-book
+
+on:
+  push:
+    branches: [main]
+    paths: ['book/**', 'site/**', '.github/workflows/web-book.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: 必要なパッケージのインストール
+        run: pip install -r site/requirements.txt
+
+      - name: Web版を作る（PHPの実行環境もここで取得する）
+        run: python site/build.py --out _site
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
