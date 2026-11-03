@@ -1,5 +1,6 @@
 # 第13章のワークフロー。このリポジトリではLaravelのプロジェクトが api フォルダーにあるので、
-# 作業フォルダーを api に変え、api の変更があったときだけ動かす
+# 作業フォルダーを api に変え、api の変更があったときだけ動かす。
+# 1つのチェックが失敗しても残りのチェックは続け、失敗の中身はジョブの概要（Summary）にも書き出す
 name: api-tests
 
 on:
@@ -8,6 +9,7 @@ on:
     paths: ['api/**', '.github/workflows/api-tests.yml']
   pull_request:
     paths: ['api/**', '.github/workflows/api-tests.yml']
+  workflow_dispatch:
 
 jobs:
   test:
@@ -52,24 +54,55 @@ jobs:
         run: composer install --no-interaction --prefer-dist --no-progress
 
       - name: 環境設定
+        id: setup
         run: |
           cp .env.example .env
           php artisan key:generate
 
       - name: コードの書き方のチェック
-        run: vendor/bin/pint --test
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          if vendor/bin/pint --test; then exit 0; fi
+          # 直すべき箇所を、ログインしなくても見られる概要に書き出す
+          vendor/bin/pint > /dev/null
+          {
+            echo '## Pint が直す箇所'
+            echo '```diff'
+            git diff
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git diff --name-only | while read -r file; do echo "::error file=$file::Pint の書き方に合っていません"; done
+          git checkout -- .
+          exit 1
 
       - name: テスト
-        run: php artisan test
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          if php artisan test 2>&1 | tee test-output.log; then exit 0; fi
+          {
+            echo '## テストの失敗'
+            echo '```text'
+            tail -n 200 test-output.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: 依存パッケージの脆弱性チェック
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: composer audit
 
       - name: OpenAPI仕様書のチェック
-        run: npx @redocly/cli lint docs/openapi.yaml
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          if npx --yes @redocly/cli lint docs/openapi.yaml 2>&1 | tee lint-output.log; then exit 0; fi
+          { echo '## 仕様書のチェックの失敗'; echo '```text'; tail -n 100 lint-output.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       # 第17章で本番用のイメージを作ったら追加する
       - name: 本番用イメージのビルドと起動の確認
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: |
           docker build -t taskboard-api:ci .
           docker run --rm --entrypoint php taskboard-api:ci artisan --version
